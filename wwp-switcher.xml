@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<wayfire>
+    <plugin name="wwp-switcher">
+        <_short>wWP Switcher</_short>
+        <_long>A plugin to switch active window.</_long>
+        <category>Window management</category>
+        <option name="activate" type="key">
+            <_short>Activate</_short>
+            <_long>Activates simple switcher with the specified key.</_long>
+            <default>&lt;super&gt; KEY_TAB</default>
+        </option>
+        <option name="background_color" type="color">
+            <_short>Background color</_short>
+            <_long>Background color to use in the simple switcher.</_long>
+            <default>#2F343FFF</default>
+        </option>
+        <option name="text_color" type="color">
+            <_short>Text color</_short>
+            <_long>Text color to use in the simple switcher.</_long>
+            <default>#D3DAE3FF</default>
+        </option>
+        <option name="font" type="string">
+            <_short>Font</_short>
+            <_long>Font to use in the simple switcher.</_long>
+            <default>Roboto 12</default>
+        </option>
+    </plugin>
+</wayfire>
