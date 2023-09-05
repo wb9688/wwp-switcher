@@ -8,11 +8,19 @@
 #include <pango/pangocairo.h>
 #include <wayfire/plugin.hpp>
 #include <wayfire/render-manager.hpp>
+#include <wayfire/plugins/common/input-grab.hpp>
+#include "wayfire/plugins/common/util.hpp"
+#include <wayfire/per-output-plugin.hpp>
 #include <wayfire/signal-definitions.hpp>
 #include <wayfire/view.hpp>
 #include <wayfire/workspace-stream.hpp>
-#include <wayfire/workspace-manager.hpp>
+#include <wayfire/workspace-set.hpp>
 #include <wayfire/plugins/common/cairo-util.hpp>
+#include <wayfire/scene.hpp>
+#include <wayfire/scene-render.hpp>
+#include <wayfire/scene-operations.hpp>
+#include <wayfire/seat.hpp>
+#include <wayfire/workarea.hpp>
 
 /*
  * This plugin provides abilities to switch between views.
@@ -122,64 +130,222 @@ namespace IconProvider
     }
 };
 
-class wayfire_simple_switcher : public wf::plugin_interface_t
+
+namespace wf
+{
+namespace scene
+{
+class simple_node_render_instance_t : public render_instance_t
+{
+    wf::signal::connection_t<node_damage_signal> on_node_damaged =
+        [=] (node_damage_signal *ev)
+    {
+        push_to_parent(ev->region);
+    };
+
+    node_t *self;
+    damage_callback push_to_parent;
+    std::shared_ptr<switcher_texture> st;
+    int *x, *y, *w, *h;
+
+  public:
+    simple_node_render_instance_t(node_t *self, damage_callback push_dmg,
+        int *x, int *y, int *w, int *h, std::shared_ptr<switcher_texture> st)
+    {
+        this->x    = x;
+        this->y    = y;
+        this->w    = w;
+        this->h    = h;
+        this->self = self;
+        this->st = st;
+        this->push_to_parent = push_dmg;
+        self->connect(&on_node_damaged);
+    }
+
+    void schedule_instructions(
+        std::vector<render_instruction_t>& instructions,
+        const wf::render_target_t& target, wf::region_t& damage)
+    {
+        // We want to render ourselves only, the node does not have children
+        instructions.push_back(render_instruction_t{
+                        .instance = this,
+                        .target   = target,
+                        .damage   = damage & self->get_bounding_box(),
+                    });
+    }
+
+    void render(const wf::render_target_t& target,
+        const wf::region_t& region)
+    {
+        auto ol    = this->st;
+        wlr_box og = {*x, *y, *w, *h};
+
+        auto rect = st->rect;
+
+        if (!st->texture)
+            return;
+
+        OpenGL::render_begin(target);
+        for (auto& box : region)
+        {
+            target.logic_scissor(wlr_box_from_pixman_box(box));
+
+            rect.x += og.x;
+            rect.y += og.y;
+
+            OpenGL::render_texture(wf::texture_t{st->texture->tex},
+                target, rect, glm::vec4(1, 1, 1, 1),
+                OpenGL::TEXTURE_TRANSFORM_INVERT_Y);
+        }
+
+        OpenGL::render_end();
+    }
+};
+
+
+class simple_node_t : public node_t
+{
+    int x, y, w, h;
+
+  public:
+    std::shared_ptr<switcher_texture> st;
+    simple_node_t(int x, int y, int w, int h) : node_t(false)
+    {
+        this->x = x;
+        this->y = y;
+        this->w = w;
+        this->h = h;
+        st = std::make_shared<switcher_texture>();
+    }
+
+    void gen_render_instances(std::vector<render_instance_uptr>& instances,
+        damage_callback push_damage, wf::output_t *shown_on) override
+    {
+        // push_damage accepts damage in the parent's coordinate system
+        // If the node is a transformer, it may transform the damage. However,
+        // this simple nodes does not need any transformations, so the push_damage
+        // callback is just passed along.
+        instances.push_back(std::make_unique<simple_node_render_instance_t>(
+            this, push_damage, &x, &y, &w, &h, st));
+    }
+
+    void do_push_damage(wf::region_t updated_region)
+    {
+        node_damage_signal ev;
+        ev.region = updated_region;
+        this->emit(&ev);
+    }
+
+    wf::geometry_t get_bounding_box() override
+    {
+        // Specify whatever geometry your node has
+        return {x, y, w, h};
+    }
+
+    void set_position(int x, int y)
+    {
+        this->x = x;
+        this->y = y;
+    }
+
+    void set_size(int w, int h)
+    {
+        this->w = w;
+        this->h = h;
+    }
+};
+
+std::shared_ptr<simple_node_t> add_simple_node(wf::output_t *output, int x, int y,
+    int w, int h)
+{
+    auto subnode = std::make_shared<simple_node_t>(x, y, w, h);
+    wf::scene::add_front(output->node_for_layer(wf::scene::layer::TOP), subnode);
+    return subnode;
+}
+
+class wayfire_simple_switcher : public wf::per_output_plugin_instance_t, public wf::keyboard_interaction_t
 {
     wf::option_wrapper_t<wf::keybinding_t> activate_key{"wwp-switcher/activate"};
     wf::option_wrapper_t<wf::color_t> background_color{"wwp-switcher/background_color"};
     wf::option_wrapper_t<wf::color_t> text_color{"wwp-switcher/text_color"};
     wf::option_wrapper_t<std::string> font{"wwp-switcher/font"};
-    switcher_texture st;
-    std::vector<wayfire_view> views; // all views on current viewport
+    std::vector<std::vector<std::shared_ptr<simple_node_t>>> switcher_textures;
+    std::vector<wayfire_toplevel_view> views; // all views on current viewport
 
     size_t current_view_index = 0;
     bool active = false;
 
+    std::unique_ptr<wf::input_grab_t> input_grab;
+
+    wf::plugin_activation_data_t grab_interface = {
+        .name = "wwp-switcher",
+        .capabilities = wf::CAPABILITY_MANAGE_COMPOSITOR
+    };
+
+
   public:
     void init() override
     {
-        grab_interface->name = "wwp-switcher";
-        grab_interface->capabilities = wf::CAPABILITY_MANAGE_COMPOSITOR;
+        auto wsize = output->wset()->get_workspace_grid_size();
+        switcher_textures.resize(wsize.width);
+        for (int x = 0; x < wsize.width; x++)
+        {
+            switcher_textures[x].resize(wsize.height);
+        }
         output->add_key(activate_key, &simple_switch);
 
-        using namespace std::placeholders;
-        grab_interface->callbacks.keyboard.mod =
-            std::bind(std::mem_fn(&wayfire_simple_switcher::handle_mod),
-                this, _1, _2);
-
-        grab_interface->callbacks.cancel = [=] ()
-        {
-            switch_terminate();
-        };
+        input_grab = std::make_unique<wf::input_grab_t>("wwp-switcher", output, this, nullptr, nullptr);
+        grab_interface.cancel = [=] () { switch_terminate(); };
 
         Gio::init();
     }
 
-    void handle_mod(uint32_t mod, uint32_t st)
+    void handle_keyboard_key(wf::seat_t*, wlr_keyboard_key_event event) override
     {
-        bool mod_released =
-            (mod == ((wf::keybinding_t)activate_key).get_modifiers() &&
-                st == WLR_KEY_RELEASED);
-
-        if (mod_released)
-        {
+        auto mod = wf::get_core().seat->modifier_from_keycode(event.keycode);
+        if ((event.state == WLR_KEY_RELEASED) && (mod & ((wf::keybinding_t)activate_key).get_modifiers()))
             switch_terminate();
+    }
+
+    std::shared_ptr<switcher_texture> get_current_st()
+    {
+        auto wsize = output->wset()->get_workspace_grid_size();
+        auto ws = output->wset()->get_current_workspace();
+        auto og = output->get_relative_geometry();
+
+        for (int x = 0; x < wsize.width; x++)
+        {
+            for (int y = 0; y < wsize.height; y++)
+            {
+                if (!switcher_textures[x][y])
+                {
+                    switcher_textures[x][y] = add_simple_node(output, x * og.width, y * og.height,
+                        og.width, og.height);
+                }
+            }
         }
+
+        return switcher_textures[ws.x][ws.y]->st;
     }
 
     void update_views()
     {
-        views = output->workspace->get_views_on_workspace(
-            output->workspace->get_current_workspace(), wf::WM_LAYERS);
+        views = output->wset()->get_views(
+            wf::WSET_CURRENT_WORKSPACE | wf::WSET_MAPPED_ONLY | wf::WSET_EXCLUDE_MINIMIZED);
 
-        std::sort(views.begin(), views.end(), [] (wayfire_view& a, wayfire_view& b)
+        std::sort(views.begin(), views.end(), [] (wayfire_toplevel_view& a, wayfire_toplevel_view& b)
         {
-            return a->last_focus_timestamp > b->last_focus_timestamp;
+            return wf::get_focus_timestamp(a) > wf::get_focus_timestamp(b);
         });
     }
 
-    wf::signal_connection_t cleanup_view = [=] (wf::signal_data_t *data)
+    wf::signal::connection_t<wf::view_disappeared_signal> cleanup_view = [=] (wf::view_disappeared_signal *ev)
     {
-        auto view = get_signaled_view(data);
+        auto view = ev->view;
+        if (!view)
+        {
+            return;
+        }
 
         size_t i = 0;
         for (; i < views.size() && views[i] != view; i++)
@@ -215,55 +381,57 @@ class wayfire_simple_switcher : public wf::plugin_interface_t
 
     void recreate_switcher_texture()
     {
-        cairo_t *cr    = st.cr;
-        cairo_surface_t *cairo_surface = st.cairo_surface;
+        auto st = get_current_st();
+        cairo_t *cr    = st->cr;
+        cairo_surface_t *cairo_surface = st->cairo_surface;
 
         if (!cr)
         {
             /* Setup dummy context to get initial font size */
             cairo_surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, 1, 1);
             cr = cairo_create(cairo_surface);
-            st.texture = std::make_unique<wf::simple_texture_t>();
+            st->texture = std::make_unique<wf::simple_texture_t>();
 
-            st.layout = pango_cairo_create_layout(cr);
+            st->layout = pango_cairo_create_layout(cr);
         }
 
-        st.desc = pango_font_description_from_string(std::string(font).c_str());
+        st->desc = pango_font_description_from_string(std::string(font).c_str());
 
-        st.rect.width = 480;
-        st.rect.height = views.size() * 48 + 24;
+        st->rect.width = 480;
+        st->rect.height = views.size() * 48 + 24;
 
         /* Recreate surface based on font size */
         cairo_destroy(cr);
         cairo_surface_destroy(cairo_surface);
 
         cairo_surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32,
-            st.rect.width, st.rect.height);
+            st->rect.width, st->rect.height);
         cr = cairo_create(cairo_surface);
 
-        pango_cairo_update_layout(cr, st.layout);
+        pango_cairo_update_layout(cr, st->layout);
 
-        st.cr = cr;
-        st.cairo_surface = cairo_surface;
+        st->cr = cr;
+        st->cairo_surface = cairo_surface;
 
-        auto workarea = output->workspace->get_workarea();
-        st.rect.x = workarea.x + (workarea.width / 2 - st.rect.width / 2);
-        st.rect.y = workarea.y + (workarea.height / 2 - st.rect.height / 2);
+        auto workarea = output->workarea->get_workarea();
+        st->rect.x = workarea.x + (workarea.width / 2 - st->rect.width / 2);
+        st->rect.y = workarea.y + (workarea.height / 2 - st->rect.height / 2);
     }
 
     void render_switcher_texture()
     {
         recreate_switcher_texture();
 
-        double xc = st.rect.width / 2;
-        double yc = st.rect.height / 2;
+        auto st = get_current_st();
+        double xc = st->rect.width / 2;
+        double yc = st->rect.height / 2;
         int x2, y2;
-        cairo_t *cr = st.cr;
+        cairo_t *cr = st->cr;
 
         cairo_clear(cr);
 
-        x2 = st.rect.width;
-        y2 = st.rect.height;
+        x2 = st->rect.width;
+        y2 = st->rect.height;
 
         cairo_set_source_rgba(cr,
             wf::color_t(background_color).r,
@@ -279,7 +447,7 @@ class wayfire_simple_switcher : public wf::plugin_interface_t
         cairo_fill(cr);
 
         int width, height;
-        pango_layout_get_size(st.layout, &width, &height);
+        pango_layout_get_size(st->layout, &width, &height);
         cairo_move_to(cr,
             xc - width / PANGO_SCALE / 2,
             yc - height / PANGO_SCALE / 2);
@@ -305,49 +473,25 @@ class wayfire_simple_switcher : public wf::plugin_interface_t
                 wf::color_t(text_color).b,
                 wf::color_t(text_color).a);
 
-            pango_font_description_set_weight(st.desc, i == current_view_index ? PANGO_WEIGHT_BOLD : PANGO_WEIGHT_NORMAL);
-            pango_layout_set_font_description(st.layout, st.desc);
+            pango_font_description_set_weight(st->desc, i == current_view_index ? PANGO_WEIGHT_BOLD : PANGO_WEIGHT_NORMAL);
+            pango_layout_set_font_description(st->layout, st->desc);
 
-            pango_layout_set_ellipsize(st.layout, PANGO_ELLIPSIZE_END);
-            pango_layout_set_width(st.layout, 384 * PANGO_SCALE);
+            pango_layout_set_ellipsize(st->layout, PANGO_ELLIPSIZE_END);
+            pango_layout_set_width(st->layout, 384 * PANGO_SCALE);
 
-            pango_layout_set_text(st.layout, view->get_title().c_str(), -1);
+            pango_layout_set_text(st->layout, view->get_title().c_str(), -1);
 
-            pango_cairo_show_layout(cr, st.layout);
+            pango_cairo_show_layout(cr, st->layout);
         }
 
         cairo_stroke(cr);
 
         OpenGL::render_begin();
-        cairo_surface_upload_to_texture(st.cairo_surface, *st.texture);
+        cairo_surface_upload_to_texture(st->cairo_surface, *st->texture);
         OpenGL::render_end();
 
         output->render->damage_whole();
     }
-
-    wf::signal_connection_t render_switcher{[this] (wf::signal_data_t *data)
-        {
-            const auto& workspace = static_cast<wf::stream_signal_t*>(data);
-            auto damage = output->render->get_scheduled_damage() &
-                output->render->get_ws_box(workspace->ws);
-            auto og   = workspace->fb.geometry;
-            auto rect = st.rect;
-
-            rect.x += og.x;
-            rect.y += og.y;
-
-            OpenGL::render_begin(workspace->fb);
-            for (auto& box : damage)
-            {
-                workspace->fb.logic_scissor(wlr_box_from_pixman_box(box));
-                OpenGL::render_texture(wf::texture_t{st.texture->tex},
-                    workspace->fb, rect, glm::vec4(1, 1, 1, 1),
-                    OpenGL::TEXTURE_TRANSFORM_INVERT_Y);
-            }
-
-            OpenGL::render_end();
-        }
-    };
 
     wf::key_callback simple_switch = [=] (auto)
     {
@@ -358,7 +502,7 @@ class wayfire_simple_switcher : public wf::plugin_interface_t
             return true;
         }
 
-        if (!output->activate_plugin(grab_interface))
+        if (!output->activate_plugin(&grab_interface))
         {
             return false;
         }
@@ -367,7 +511,7 @@ class wayfire_simple_switcher : public wf::plugin_interface_t
 
         if (views.size() < 1)
         {
-            output->deactivate_plugin(grab_interface);
+            output->deactivate_plugin(&grab_interface);
 
             return false;
         }
@@ -375,29 +519,54 @@ class wayfire_simple_switcher : public wf::plugin_interface_t
         current_view_index = 0;
         active = true;
 
-        grab_interface->grab();
+        input_grab->grab_input(wf::scene::layer::OVERLAY);
+        input_grab->set_wants_raw_input(true);
         switch_next();
 
-        output->connect_signal("view-disappeared", &cleanup_view);
-
-        output->render->connect_signal("workspace-stream-post", &render_switcher);
+        output->connect(&cleanup_view);
 
         return true;
     };
+
+    void switcher_texture_destroy(std::shared_ptr<switcher_texture> st)
+    {
+        if (!st->cr)
+        {
+            return;
+        }
+
+        st->texture.reset();
+        cairo_surface_destroy(st->cairo_surface);
+        cairo_destroy(st->cr);
+        st->cr = nullptr;
+    }
 
     void switch_terminate()
     {
         output->render->damage_whole();
 
-        grab_interface->ungrab();
-        output->deactivate_plugin(grab_interface);
+        input_grab->ungrab_input();
+        output->deactivate_plugin(&grab_interface);
         output->focus_view(views[current_view_index], true);
-
-        render_switcher.disconnect();
 
         active = false;
 
-        output->disconnect_signal(&cleanup_view);
+        output->disconnect(&cleanup_view);
+
+        auto wsize = output->wset()->get_workspace_grid_size();
+        for (int x = 0; x < wsize.width; x++)
+        {
+            for (int y = 0; y < wsize.height; y++)
+            {
+                auto& st = switcher_textures[x][y]->st;
+                switcher_texture_destroy(st);
+                st.reset();
+                wf::scene::remove_child(switcher_textures[x][y]);
+                switcher_textures[x][y].reset();
+            }
+        }
+
+        output->render->damage_whole();
     }
 
     void switch_next()
@@ -419,4 +588,6 @@ class wayfire_simple_switcher : public wf::plugin_interface_t
     }
 };
 
-DECLARE_WAYFIRE_PLUGIN(wayfire_simple_switcher);
+DECLARE_WAYFIRE_PLUGIN(wf::per_output_plugin_t<wayfire_simple_switcher>);
+}
+}
