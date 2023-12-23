@@ -20,6 +20,7 @@
 #include <wayfire/scene-render.hpp>
 #include <wayfire/scene-operations.hpp>
 #include <wayfire/seat.hpp>
+#include <wayfire/window-manager.hpp>
 #include <wayfire/workarea.hpp>
 
 /*
@@ -547,7 +548,7 @@ class wayfire_simple_switcher : public wf::per_output_plugin_instance_t, public 
 
         input_grab->ungrab_input();
         output->deactivate_plugin(&grab_interface);
-        output->focus_view(views[current_view_index], true);
+        wf::get_core().default_wm->focus_raise_view(views[current_view_index]);
 
         active = false;
 
