@@ -35,8 +35,8 @@ class switcher_texture
     std::unique_ptr<wf::simple_texture_t> texture;
     cairo_t *cr = nullptr;
     cairo_surface_t *cairo_surface;
-    PangoLayout *layout; // FIXME: g_object_unref
-    PangoFontDescription *desc; // FIXME: pango_font_description_free
+    PangoLayout *layout;
+    PangoFontDescription *desc;
 };
 
 /* Icon loading functions */
@@ -394,9 +394,8 @@ class wayfire_simple_switcher : public wf::per_output_plugin_instance_t, public 
             st->texture = std::make_unique<wf::simple_texture_t>();
 
             st->layout = pango_cairo_create_layout(cr);
+            st->desc = pango_font_description_from_string(std::string(font).c_str());
         }
-
-        st->desc = pango_font_description_from_string(std::string(font).c_str());
 
         st->rect.width = 480;
         st->rect.height = views.size() * 48 + 24;
@@ -540,6 +539,8 @@ class wayfire_simple_switcher : public wf::per_output_plugin_instance_t, public 
         cairo_surface_destroy(st->cairo_surface);
         cairo_destroy(st->cr);
         st->cr = nullptr;
+        g_object_unref(st->layout);
+        pango_font_description_free(st->desc);
     }
 
     void switch_terminate()
