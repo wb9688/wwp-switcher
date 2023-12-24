@@ -102,10 +102,36 @@ namespace IconProvider
         return Icon{};
     }
 
+    std::string get_image_path(std::string icon_theme_path, std::string icon_string)
+    {
+        auto path = icon_theme_path + "/24x24/" + icon_string + ".svg";
+        if (Gio::File::create_for_path(path)->query_exists())
+            return path;
+
+        path = icon_theme_path + "/24x24/" + icon_string + ".png";
+        if (Gio::File::create_for_path(path)->query_exists())
+            return path;
+
+        path = icon_theme_path + "/scalable/" + icon_string + ".svg";
+        if (Gio::File::create_for_path(path)->query_exists())
+            return path;
+
+        return "";
+    }
+
     /* Second method: Just look up the built-in icon theme,
      * perhaps some icon can be found there */
-    std::string get_image_path_from_icon(std::string app_id)
+    std::string get_image_path_from_icon(std::string icon_theme, std::string app_id)
     {
+        // TODO: Implement entire algorithm from https://specifications.freedesktop.org/icon-theme-spec/latest/ar01s05.html
+        auto icon_theme_path = "/usr/share/icons/" + icon_theme;
+        if (!Gio::File::create_for_path(icon_theme_path + "/index.theme")->query_exists()) {
+            icon_theme_path = "/usr/local/share/icons/" + icon_theme;
+            if (!Gio::File::create_for_path(icon_theme_path + "/index.theme")->query_exists()) {
+                // TODO: Icon theme does not exist
+            }
+        }
+
         auto icon = get_from_desktop_app_info(app_id);
 
         if (icon) {
@@ -115,19 +141,25 @@ namespace IconProvider
                     return icon_string;
                 }
             } else {
-                auto path = "/usr/share/icons/Papirus-Dark/24x24/apps/" + icon_string + ".svg"; // FIXME: Don't hardcode
-                if (Gio::File::create_for_path(path)->query_exists()) {
+                auto path = get_image_path(icon_theme_path, "apps/" + icon_string);
+                if (path != "")
                     return path;
-                }
             }
         }
 
-        auto path = "/usr/share/icons/Papirus-Dark/24x24/apps/" + app_id + ".svg";
-        if (Gio::File::create_for_path(path)->query_exists()) {
+        auto path = get_image_path(icon_theme_path, "apps/" + app_id);
+        if (path != "")
             return path;
+
+        path = get_image_path(icon_theme_path, "mimetypes/application-x-executable");
+
+        if (icon_theme != "hicolor") {
+            auto hicolor_path = get_image_path_from_icon("hicolor", app_id);
+            if (path == "" || (hicolor_path.find("mimetypes/application-x-executable") == std::string::npos && hicolor_path != ""))
+                return hicolor_path;
         }
 
-        return "/usr/share/icons/Papirus-Dark/24x24/mimetypes/application-x-executable.svg";
+        return path;
     }
 };
 
@@ -270,6 +302,7 @@ class wayfire_simple_switcher : public wf::per_output_plugin_instance_t, public 
     wf::option_wrapper_t<wf::color_t> background_color{"wwp-switcher/background_color"};
     wf::option_wrapper_t<wf::color_t> text_color{"wwp-switcher/text_color"};
     wf::option_wrapper_t<std::string> font{"wwp-switcher/font"};
+    wf::option_wrapper_t<std::string> icon_theme{"wwp-switcher/icon_theme"};
     std::vector<std::vector<std::shared_ptr<simple_node_t>>> switcher_textures;
     std::vector<wayfire_toplevel_view> views; // all views on current viewport
 
@@ -457,13 +490,15 @@ class wayfire_simple_switcher : public wf::per_output_plugin_instance_t, public 
         {
             view = views[i];
 
-            std::string icon_path = IconProvider::get_image_path_from_icon(view->get_app_id());
-            auto pixbuf = gdk_pixbuf_new_from_file_at_size(icon_path.c_str(), 24, 24, nullptr);
+            std::string icon_path = IconProvider::get_image_path_from_icon(std::string(icon_theme).c_str(), view->get_app_id());
+            if (icon_path != "") {
+                auto pixbuf = gdk_pixbuf_new_from_file_at_size(icon_path.c_str(), 24, 24, nullptr);
 
-            gdk_cairo_set_source_pixbuf(cr, pixbuf, 24, i * 48 + 24);
-            cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
-            cairo_rectangle(cr, 24, i * 48 + 24, 24, 24);
-            cairo_fill(cr);
+                gdk_cairo_set_source_pixbuf(cr, pixbuf, 24, i * 48 + 24);
+                cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
+                cairo_rectangle(cr, 24, i * 48 + 24, 24, 24);
+                cairo_fill(cr);
+            }
 
             cairo_move_to(cr, 72, i * 48 + 24);
 

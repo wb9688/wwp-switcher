@@ -24,5 +24,10 @@
             <_long>Font to use in the simple switcher.</_long>
             <default>Roboto 12</default>
         </option>
+        <option name="icon_theme" type="string">
+            <_short>Icon theme</_short>
+            <_long>Icon theme to use in the simple switcher.</_long>
+            <default>Papirus-Dark</default>
+        </option>
     </plugin>
 </wayfire>
