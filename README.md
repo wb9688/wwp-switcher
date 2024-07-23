@@ -28,8 +28,16 @@ font = DejaVu Sans 12
 icon_theme = Papirus-Dark
 ```
 
+You can put that into your `~/.config/wayfire.ini` and adjust it however you want.
+
 ## FAQ
 
 ### What does wWP stand for?
 
 wWP stands for wb9688's Wayfire Plugins.
+
+### Why do the icons not display as expected?
+
+First, please check whether you have set `icon_theme` to the correct icon theme, which you have installed.
+
+wWP Switcher currently does not implement the full freedesktop.org Icon Theme Specification yet, so it might also be possible that wWP Switcher does not work well with your icon theme. It is known that with e.g. Adwaita it will show a generic application icon for almost all applications.
