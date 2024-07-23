@@ -22,9 +22,9 @@ The default config for wWP Switcher is as follows:
 ```ini
 [wwp-switcher]
 activate = <super> KEY_TAB
-background_color = \#2F343FFF
-text_color = \#D3DAE3FF
-font = Roboto 12
+background_color = \#000000DD
+text_color = \#FFFFFFFF
+font = DejaVu Sans 12
 icon_theme = Papirus-Dark
 ```
 

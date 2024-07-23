@@ -12,17 +12,17 @@
         <option name="background_color" type="color">
             <_short>Background color</_short>
             <_long>Background color to use in the simple switcher.</_long>
-            <default>#2F343FFF</default>
+            <default>#000000DD</default>
         </option>
         <option name="text_color" type="color">
             <_short>Text color</_short>
             <_long>Text color to use in the simple switcher.</_long>
-            <default>#D3DAE3FF</default>
+            <default>#FFFFFFFF</default>
         </option>
         <option name="font" type="string">
             <_short>Font</_short>
             <_long>Font to use in the simple switcher.</_long>
-            <default>Roboto 12</default>
+            <default>DejaVu Sans 12</default>
         </option>
         <option name="icon_theme" type="string">
             <_short>Icon theme</_short>
